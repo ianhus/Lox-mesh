@@ -1,0 +1,82 @@
+#################################################
+###############      Lox 2.0      ###############
+#### After Meselhe, Arceneaux, Waldon (2010) ####
+#################################################
+
+# Clear all variables before new model run #
+rm(list=ls(all=TRUE))
+
+# Read in inflows and outflows #
+
+setwd("E:/Kati/Lox/LoxMods")
+Qin <- as.numeric(as.matrix(read.csv("Flows_in.csv"))[,13])          #[cfs]
+Qout <- as.numeric(as.matrix(read.csv("Flows_out.csv"))[,10])        #[cfs]
+P <- as.numeric(as.matrix(read.csv("Rain_data.csv"))[,2])   #[inches]  (1997 file is actually LOXWS)
+ET <- as.numeric(as.matrix(read.csv("ET_data.csv"))[,2])    #[mm]
+cal <- as.matrix(read.csv("stage_cal.csv"))            #[ft]
+marsh <- cal[,1]/3.28; canal <- cal[,2]/3.28           #The datasets that Waldon calibrated against, aka "Observed"
+
+# Define constants and parameters #
+Ac <- 996/640*1.62^2*1000^2       #Area of canal [m2] (given in acres, converted to m^2)
+Am <- 138325/640*1.62^2*1000^2    #Area of marsh [m2] (given in acres, converted to m^2)
+E0 <- 4.62     #Avg ground surface elevation of Marsh [m NGVD29] (from Waldon)
+StgC <- NULL   #Setting up canal stage vector
+StgM <- NULL   #Setting up marsh stage vector
+StgC[1] <- 5.23   #Initial stage in canal [m NGVD29] (1/1/95) 
+StgM[1] <- 5.24   #Initial stage in marsh [m NGVD29] (1/1/95) 
+C <- 1.88E9    #Canal/marsh water transport coeff [m-1*d-1]
+GC <- 0.042    #Canal seepage constant [d-1] 
+GM <- 0.0001315  #Marsh seepage constant [d-1] 
+StgB <- 3.5    #Boundary water surface elevation for seepage [m]
+f.ET.min <- 0.2 #Minimum ET reduction factor
+H.ET <- 0.25    #Depth at/below which ET is reduced [m] ; H = max(0,StgM-E0)
+dC.max <- 0.1/3.28   #max daily stage change for the Canal [m] converted from 0.1ft
+StgC.min <- 4.27     #minimum Canal stage, after Waldon & Co. [m] converted from 14ft
+
+# Daily calculations #
+for (i in 1:length(Qin)) {
+  
+  Qmc <- (C*max(0,(StgM[i] - E0))^3*(StgC[i] - StgM[i]))
+
+  
+  if (StgM[i] - E0 < 0.25) {
+    
+    ET[i] <- ET[i]*max(f.ET.min, min(1,(max(0,StgM[i] - E0))/H.ET))
+    
+  }
+  
+  dStgC <- P[i]*0.0254 - ET[i]/1000 - GC*(StgC[i] - StgB) + (Qin[i] - Qout[i])*86400/35.3/Ac - Qmc/Ac
+  
+  if (abs(dStgC) > dC.max) {   #0.1ft set as max daily stage change for Canal
+    
+    d.StgC <- dStgC/abs(dStgC)*dC.max
+    StgC[i+1] <- StgC[i] + d.StgC
+    if (StgC[i+1] < StgC.min) {   #adjusting Canal stage up to minimum if necessary 
+      StgC[i+1] == StgC.min
+    }
+    
+    Q.mc <- (dStgC - d.StgC)*Ac
+    dStgM <- P[i]*0.0254 - ET[i]/1000 - GM*(StgM[i] - StgB) + Qmc/Am + Q.mc/Am
+    StgM[i+1] <- StgM[i] + dStgM
+    
+  } else {
+    
+    StgC[i+1] <- StgC[i] + dStgC
+    if (StgC[i+1] < StgC.min) {   #adjusting Canal stage up to minimum if necessary 
+      StgC[i+1] == StgC.min
+    }
+    dStgM <- P[i]*0.0254 - ET[i]/1000 - GM*(StgM[i] - StgB) + Qmc/Am
+    StgM[i+1] <- StgM[i] + dStgM
+    
+  }
+}
+
+#print(cbind(P*0.0254, ET/1000, Qin*86400/35.3/Ac, Qout*86400/35.3/Ac))
+
+
+#plot(canal, ylim = range(3,6), main = paste("Canal")) # xlim = range(2000,3000),
+#lines(StgC)
+plot(marsh, ylim = range(4,6), main = paste("Marsh")) # xlim = range(2000,3000),
+lines(StgM)
+
+#paste("C = ", C , sep = "")
