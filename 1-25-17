@@ -1,0 +1,113 @@
+#################################################
+###############      Lox 2.0      ###############
+#### After Meselhe, Arceneaux, Waldon (2010) ####
+#################################################
+
+# Clear all variables before new model run #
+rm(list=ls(all=TRUE))
+
+setwd("E:/Kati/Lox/LoxMods") #/Volumes/IKH/Kati/Lox/LoxMods 
+
+## I'm using data from 2005-2015 because 1/1/05 had lots of stage data 
+## from which to interpolate an intitial water surface, and 10+ years
+## seemed like an adequate period of time for model creation.
+
+## Read in inflows and outflows ##
+Q <- read.csv("Flows05-.csv")  #[cfs]               
+Q[is.na(Q)] <- 0               #replaces NA with 0      
+P <- read.csv("Rain05-.csv")   #[inches]   
+P[is.na(P)] <- 0               #replaces NA with 0 
+ET <- read.csv("ET05-.csv")    #[mm]      
+ET[is.na(ET)] <- 0             #replaces NA with 0 
+grid.data <- read.csv("WCA_Model_Data.csv")  #the attributes of each grid cell
+pos <- read.csv("UTM.csv")                   #the coordinates of each flow structure
+stage <- read.csv("Stage05-.csv")            #measured daily mean stage at each marsh gauge
+
+## Define constants and parameters ##
+grids <- 400     #grid size (spacing or edge length) [m]
+area <- grids^2  #area of each grid cell
+B <- 30          #Calibrated transport coeff taken from Mike, converted to metric [m-1*d-1]
+C <- 2E7*B       #Inter-cellular water transfer coeff [m-1*d-1] ##(debate over whether that should be 2 or 2pi)
+GM <- 0.0001315  #Marsh seepage constant [d-1] ~from Mike
+f.ET.min <- 0.2  #Minimum ET reduction factor   ~from Mike
+H.ET <- 0.25     #Depth at/below which ET is reduced [m] ; H = max(0,StgM-E0)  ~from Mike
+
+## Create vector of elevations for each grid cell ##
+elevs <- grid.data$elev_ft_NG
+
+## Create an empty stage vector for each cell ## code modified from "akrun" on stackoverflow :http://stackoverflow.com/questions/28221755/how-to-split-a-r-data-frame-into-vectors-unbind
+init <- matrix(nrow = nrow(stage), ncol = nrow(grid.data)) #a column for each cell, a row for each day
+init[1,] <- grid.data$StgJan05 #set the first stage equal to the initial value (1/1/05)
+#list2env(setNames(split(init, col(init)), paste0("stage.",1:ncol(init))), envir=.GlobalEnv) #split 'init' by column and give each a name
+#rm(init) #removes the huge matrix that we no longer need <--------May need to keep it and get rid of individuals
+
+## Find cell nearest to each inflow or ourflow structure ##
+g2 <- NULL
+for (i in 1:nrow(pos)) { #for each flow structure listed
+  g1 <- NULL
+  for (j in 1:nrow(grid.data)) { #measure the distance to each grid cell
+    g1[j] <- sqrt((pos$North[i] - grid.data$Yutm[j])^2 + (pos$East[i] - grid.data$Xutm[j])^2)
+  }
+  g2[i] <- which.min(g1) #store the grid that is closest to each structure
+}
+
+#for (i in 1:nrow(grid.data)) { #for each grid cell
+#  if (i %in% g2) { #if this cell is nearest to a structure, give (or take from) it that structure's flow (from Flows05-)
+#    grid.data$Yutm[i] <- "doggo"
+#  }
+#}
+
+
+
+## Create a 
+
+
+
+
+# Daily calculations #
+for (i in 1:length(Qin)) {
+  
+  Qmc <- (C*max(0,(StgM[i] - E0))^3*(StgC[i] - StgM[i]))
+
+  
+  if (StgM[i] - E0 < 0.25) {
+    
+    ET[i] <- ET[i]*max(f.ET.min, min(1,(max(0,StgM[i] - E0))/H.ET))
+    
+  }
+  
+  dStgC <- P[i]*0.0254 - ET[i]/1000 - GC*(StgC[i] - StgB) + (Qin[i] - Qout[i])*86400/35.3/Ac - Qmc/Ac
+  
+  if (abs(dStgC) > dC.max) {   #0.1ft set as max daily stage change for Canal
+    
+    d.StgC <- dStgC/abs(dStgC)*dC.max
+    StgC[i+1] <- StgC[i] + d.StgC
+    if (StgC[i+1] < StgC.min) {   #adjusting Canal stage up to minimum if necessary 
+      StgC[i+1] == StgC.min
+    }
+    
+    Q.mc <- (dStgC - d.StgC)*Ac
+    dStgM <- P[i]*0.0254 - ET[i]/1000 - GM*(StgM[i] - StgB) + Qmc/Am + Q.mc/Am
+    StgM[i+1] <- StgM[i] + dStgM
+    
+  } else {
+    
+    StgC[i+1] <- StgC[i] + dStgC
+    if (StgC[i+1] < StgC.min) {   #adjusting Canal stage up to minimum if necessary 
+      StgC[i+1] == StgC.min
+    }
+    dStgM <- P[i]*0.0254 - ET[i]/1000 - GM*(StgM[i] - StgB) + Qmc/Am
+    StgM[i+1] <- StgM[i] + dStgM
+    
+  }
+}
+
+#print(cbind(P*0.0254, ET/1000, Qin*86400/35.3/Ac, Qout*86400/35.3/Ac))
+
+
+#plot(canal, ylim = range(3,6), main = paste("Canal")) # xlim = range(2000,3000),
+#lines(StgC)
+plot(marsh, ylim = range(4,6), main = paste("Marsh")) # xlim = range(2000,3000),
+lines(StgM)
+
+#paste("C = ", C , sep = "")
