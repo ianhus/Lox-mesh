@@ -1,0 +1,155 @@
+#################################################
+###############      Lox 2.0      ###############
+#### After Meselhe, Arceneaux, Waldon (2010) ####
+#################################################
+
+# Clear all variables before new model run #
+rm(list=ls(all=TRUE))
+
+setwd("E:/Kati/Lox/LoxMods") #/Volumes/IKH/Kati/Lox/LoxMods 
+
+## I'm using data from 2005-2015 because 1/1/05 had lots of stage data 
+## from which to interpolate an intitial water surface, and 10+ years
+## seemed like an adequate period of time for model creation.
+
+## Read in inflows and outflows ##
+Q <- read.csv("Flows05-.csv")/35.3  #[m3s-1]               
+Q[is.na(Q)] <- 0                    #replaces NA with 0      
+P <- read.csv("Rain05-.csv")*0.0254 #[m]   
+P[is.na(P)] <- 0                    #replaces NA with 0 
+ET <- read.csv("ET05-.csv")/1000    #[m]      
+ET[is.na(ET)] <- 0                  #replaces NA with 0 
+grid.data <- read.csv("WCA_Model_Data.csv")  #the attributes of each grid cell
+pos <- read.csv("UTM.csv")                   #the coordinates of each flow structure
+stage <- read.csv("Stage05-.csv")/3.28       #measured daily mean stage at each marsh gauge [m]
+
+## Define constants and parameters ##
+grids <- 400      #grid size (spacing or edge length) [m]
+area <- grids^2   #area of each grid cell
+B <- 30           #Calibrated transport coeff taken from Mike, converted to metric [m-1*d-1]
+C <- pi*2E7*B/24  #Inter-cellular water transfer coeff [m-1*hr-1] !!(unsure whether that should be 2 or 2pi, Mike used 2pi)
+GM <- 0.0001315   #Marsh seepage constant [d-1] ~from Mike
+StgB <- 3.5       #Boundary water surface elevation for seepage [m]   ~from Mike
+f.ET.min <- 0.2   #Minimum ET reduction factor   ~from Mike
+H.ET <- 0.25      #Depth at/below which ET is reduced [m] ; H = max(0,StgM-E0)  ~from Mike
+
+## Create vector of elevations for each grid cell ##
+elevs <- grid.data$elev_ft_NG/3.28           #cell elevations [m]
+
+## Create an empty stage vector for each cell ## code modified from "akrun" on stackoverflow :http://stackoverflow.com/questions/28221755/how-to-split-a-r-data-frame-into-vectors-unbind
+stage.day <- matrix(nrow = nrow(stage), ncol = nrow(grid.data)) #a column for each cell, a row for each day
+stage.day[1,] <- grid.data$StgJan05/3.28 #set the first stage equal to the initial value (1/1/05)
+stage.hr <- matrix(nrow = 24, ncol = nrow(grid.data)) #a column for each cell, a row for each hour of the day
+#list2env(setNames(split(init, col(init)), paste0("stage.",1:ncol(init))), envir=.GlobalEnv) #split 'init' by column and give each a name
+#rm(init) #removes the huge matrix that we no longer need <--------May need to keep it and get rid of individuals
+
+## Find cell nearest to each inflow or outflow structure ##
+g2 <- NULL
+for (i in 1:nrow(pos)) { #for each flow structure listed
+  g1 <- NULL
+  for (j in 1:nrow(grid.data)) { #measure the distance to each grid cell
+    g1[j] <- sqrt((pos$North[i] - grid.data$Yutm[j])^2 + (pos$East[i] - grid.data$Xutm[j])^2)
+  }
+  g2[i] <- which.min(g1) #store the grid that is closest to each structure
+}
+
+## The Main Event ##
+for (d in 2:nrow(stage)) {                       #run program for each day in the dataset
+  if (d == 2) {                                  #if this is the beginning of the simulation, initialize stage for each cell
+    stage.hr[1,] <- grid.data$StgJan05/3.28
+  } else {
+    stage.hr[1,] <- stage.hr[24,]                #if a continuation, start where yesterday left off
+  }
+  stage.hr[2:24,] <- 0                           #zero out other rows..should quickly point out mistakes at the end of the day
+  for (h in 1:24) {                              #track each hour within the day
+    d.stage.hr <- mat.or.vec(nrow(grid.data), 1) #reset hourly stage change
+    for (c in 1:nrow(grid.data)) {     #run for each cell in the grid
+      if (c %in% g2) {                 #if current cell is nearest a flow structure(s), give/take its flow
+        d.stage.hr[c] <- Q[d,match(c,g2)]*3600/area          #find appropriate flow rate [cfs] based on day and grid cell, convert to meters to find stage change
+      }
+      if (stage.hr[h,c] - elevs[c] < H.ET) {                 #invoke ET reduction contingency if necessary
+        
+        ET[d,1] <- ET[d,1]*max(f.ET.min, min(1,(max(0,stage.hr[h,c] - elevs[c]))/H.ET))      #from Mike
+        
+      }
+      d.stage.hr[c] <- d.stage.hr[c] + P[d,1]/24 + GM*(stage.hr[h,c] - StgB)/24 - ET[d,1]/24 #calculate incremental change in stage 
+      stage.hr[h,c] <- stage.hr[h,c] + d.stage.hr[c] #update stage for current cell in current hour
+      
+      ## Check for adjacencies to determine flow paths ##
+      if (stage.hr[h,c] > elevs[c]) {
+        adj <- matrix(nrow = 8, ncol = 1)
+        for (a in 1:nrow(grid.data)) {
+          if ((grid.data$Yutm[a] == grid.data$Yutm[c] + 400) && (grid.data$Xutm[a] == grid.data$Xutm[c] + 400)) {
+            adj[1] <- a
+          }
+          if ((grid.data$Yutm[a] == grid.data$Yutm[c]) && (grid.data$Xutm[a] == grid.data$Xutm[c] + 400)) {
+            adj[2] <- a
+          }
+          if ((grid.data$Yutm[a] == grid.data$Yutm[c] - 400) && (grid.data$Xutm[a] == grid.data$Xutm[c] + 400)) {
+            adj[3] <- a
+          }
+          if ((grid.data$Yutm[a] == grid.data$Yutm[c] - 400) && (grid.data$Xutm[a] == grid.data$Xutm[c])) {
+            adj[4] <- a
+          }
+          if ((grid.data$Yutm[a] == grid.data$Yutm[c] - 400) && (grid.data$Xutm[a] == grid.data$Xutm[c] - 400)) {
+            adj[5] <- a
+          }
+          if ((grid.data$Yutm[a] == grid.data$Yutm[c]) && (grid.data$Xutm[a] == grid.data$Xutm[c] - 400)) {
+            adj[6] <- a
+          }
+          if ((grid.data$Yutm[a] == grid.data$Yutm[c] + 400) && (grid.data$Xutm[a] == grid.data$Xutm[c] - 400)) {
+            adj[7] <- a
+          }
+          if ((grid.data$Yutm[a] == grid.data$Yutm[c] + 400) && (grid.data$Xutm[a] == grid.data$Xutm[c])) {
+            adj[8] <- a
+          }
+        }
+        ## Find water surface elevation difference between adjacent cells ##
+        drop <- matrix(nrow = 8, ncol = 1)
+        for (m in 1:length(adj)) {
+          drop[m] <- stage.hr[h,c] - max(stage.hr[h,adj[m]], elevs[adj[m]]) #find drop to stage or elev, whichever is higher
+        }
+        drop[is.na(drop)] <- -9999       #re-assigning NAs to work with logical statements
+        ## Find relative slope between adjacent cells ##
+        if (max(drop) > 0.0001) {        #If there is positive slope from current cell, distribute water from cell
+          slope <- matrix(nrow = 8, ncol = 1)
+          for (n in c(1,3,5,7)) {        #for adjacent "corners", the distance is greater
+            slope[n] <- drop[n]/sqrt(2)
+          }
+          for (nn in c(2,4,6,8)) {       #"cardinal" neighbors have weight of 1
+            slope[nn] <- drop[nn]
+          }
+          for (s in 1:length(slope)) {   #re-re-assign NAs to find proportion of slope (and flow) to allot to each downhill neighbor
+            if (slope[s] < 0) {
+              slope[s] <- 0
+            }
+          }
+          prop <- matrix(nrow = 8, ncol = 1)
+          for (p in 1:length(slope)) {   #find the portion of "total slope" for each downhill cell
+            prop[p] <- slope[p]/sum(slope)
+          }
+          #My idea is to determine total outflow based on the largest head difference, then allocate
+          #that flow proportionally based on the head gradients with the downhill neighbors
+          Q.coeff <- cbind(prop,adj)     #link proportion of flow to corresponding neighbors
+          Q.tot <- C*max(0,(stage.hr[h,c] - elevs[c]))^3*(max(drop)) #"power law" relationship for total flow, after Mike, after K&K
+          for (q in 1:8) {
+            d.stage.hr[Q.coeff[q,2]] <- Q.tot*Q.coeff[q,1]/area
+          }
+          
+        } #if there is at least one positive drop
+        
+      }   #if there is standing water in current cell
+      
+    }     #for each cell
+    
+    stage.hr[h,] <- stage.hr[h,] + d.stage.hr
+    
+  }       #for each hour
+  
+  for (cc in 1:nrow(grid.data)) {
+    stage.day[d,cc] <- mean(stage.hr[,cc])
+  }
+  
+}         #for each day
+
+matrx <- matrix(c(1,2,4,7), nrow = 2, byrow = T); matrx2 <- matrix(c(1,2), nrow = 1, byrow = T)
