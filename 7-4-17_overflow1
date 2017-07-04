@@ -1,0 +1,229 @@
+#################################################
+###############      Lox 2.0      ###############
+#### After Meselhe, Arceneaux, Waldon (2010) ####
+#################################################
+
+#depth-dependent Mannings for exchange flows: n = a*d^b
+
+# Clear all variables before new model run #
+rm(list=ls(all=TRUE))
+tick <- Sys.time()
+print(tick)
+setwd("E:/Kati/Lox/LoxMods") #/Volumes/IKH/Kati/Lox/LoxMods 
+
+## I'm using data from 2005-2015 because 1/1/05 had lots of stage data 
+## from which to interpolate an intitial water surface, and 10+ years
+## seemed like an adequate period of time for model creation.
+
+## Read in inflows and outflows ##
+Q <- read.csv("Flows05-.csv")/35.3  #[m3s-1]               
+Q[is.na(Q)] <- 0                    #replaces NA with 0      
+P <- read.csv("Rain05-.csv")*0.0254 #[m]   
+P[is.na(P)] <- 0                    #replaces NA with 0 
+ET <- read.csv("ET05-.csv")/1000    #[m]      
+ET[is.na(ET)] <- 0                  #replaces NA with 0 
+grid.data <- read.csv("NEW_DATA_MATRIX_800m.csv")  #the attributes of each grid cell
+pos.flow <- read.csv("UTM-flow.csv")         #the coordinates of each flow structure
+pos.stage <- read.csv("UTM-stage.csv")       #the coordinates of each stage gauge
+stage <- read.csv("Stage05-.csv")/3.28       #measured daily mean stage at each marsh gauge [m]
+adj <- read.csv("NEW_ADJ_MATRIX_800m.csv", header = F)               #the adjacency matrix created in Grid_Resize.R !!!!!!!!!!!!!!!!!
+
+## Define constants and parameters ##
+base.grid <- 400 # this should remain fixed in the current model formulation
+scalar <- 2  # as of right now you need to manually adjust this...
+grids <- base.grid*scalar      #grid size (spacing or edge length) [m] 
+area <- grids^2*(143238*4047/nrow(grid.data)/grids^2)   #area of each grid cell (adjusted to account for grid error) ac*m^2/ac
+ncell <- nrow(grid.data) #!!!!!!!!!!!!!!!!!!!!!
+#B <- 30           #Calibrated transport coeff taken from Mike, converted to metric [m-1*d-1]
+#C <- 2E3*B        #Inter-cellular water transfer coeff [m-1*d-1] !!(unsure whether that should be 2 or 2pi; Mike used 2piE7 as if width/radius == 2pi)
+a <- 1.2E5        #coefficient for d-dependent Mannings (from Min et al. [~3E4 - 5E5], n = a*d^b)
+b <- -0.77        #exponent for d-dependent Mannings (SFWMD, Min et al. n = a*d^b)
+GM <- 0.0001315   #Marsh seepage constant [d-1] ~from Mike
+StgB <- 3.5       #Boundary water surface elevation for seepage [m]   ~from Mike
+#f.ET.min <- 0.2   #Minimum ET reduction factor   ~from Mike
+#H.ET <- 0.25      #Depth at/below which ET is reduced [m] ; H = max(0,StgM-E0)  ~from Mike
+ds.max <- 0.2     #maximum stage change per day [m]  (S362 and G310 have seen .6-.8ft)
+d.det <- 0.03     #depth below which no flow occurs
+
+## Create vector of elevations for each grid cell ##
+elevs <- grid.data$elev_ft_NG/3.28           #cell elevations [m] 
+
+## Create an empty stage vector for each cell ## code modified from "akrun" on stackoverflow :http://stackoverflow.com/questions/28221755/how-to-split-a-r-data-frame-into-vectors-unbind
+stage.day <- matrix(nrow = 366, ncol = ncell) #a column for each cell, a row for each day
+stage.day[1,] <- grid.data$StgJan05/3.28 #set the first stage equal to the initial value (1/1/05) !!!!!!!!!!!!!
+#list2env(setNames(split(init, col(init)), paste0("stage.",1:ncol(init))), envir=.GlobalEnv) #split 'init' by column and give each a name
+#rm(init) #removes the huge matrix that we no longer need <--------May need to keep it and get rid of individuals
+
+## Find cell nearest to each stage gauge ##
+f2 <- NULL
+for (i in 1:nrow(pos.stage)) { #for each stage gauge listed
+  f1 <- NULL
+  for (j in 1:ncell) { #measure the distance to each grid cell
+    f1[j] <- sqrt((pos.stage$Yutm[i] - grid.data$Yutm[j])^2 + (pos.stage$Xutm[i] - grid.data$Xutm[j])^2)
+  }
+  f2[i] <- which.min(f1) #store the grid that is closest to each structure
+}
+
+## Find cell nearest to each inflow or outflow structure ##
+g2 <- NULL
+for (i in 1:nrow(pos.flow)) { #for each flow structure listed
+  g1 <- NULL
+  for (j in 1:ncell) { #measure the distance to each grid cell
+    g1[j] <- sqrt((pos.flow$Yutm[i] - grid.data$Yutm[j])^2 + (pos.flow$Xutm[i] - grid.data$Xutm[j])^2)
+  }
+  g2[i] <- which.min(g1) #store the grid that is closest to each structure
+}
+
+for (d in 1:365) {   ########changed this temporarily to avoid a 'subscript out of bounds'
+  d.stage <- mat.or.vec(ncell, 1)
+  for (c in 1:ncell) {
+    
+    d.stage[c] <- P[d,1] - GM*(stage.day[d,c] - StgB) - ET[d,1] #calculate incremental change in stage 
+    
+    if (c %in% g2) {                 #if current cell is nearest a flow structure(s), give/take its flow
+      d.stage[c] <- d.stage[c] + Q[d,match(c,g2)]*86400/area         #find appropriate flow rate [cfs] based on day and grid cell, convert to meters to find stage change
+    }
+    
+    if (abs(d.stage[c]) > ds.max) {   #0.2m set as max daily stage change for cell
+      
+      sgn <- d.stage[c]/abs(d.stage[c])
+      d..stage <- sgn*ds.max # scaling d.stage down to ds.max while retaining sign
+      stage.day[d,c] <- stage.day[d,c] + d..stage   # updating stage for the current cell
+      
+      nbr <- abs(8 - sum(as.integer(is.na(adj[,c])))) # find out how many neighbors the current cell has
+      
+      nbs <- matrix(nr = 1, nc = nbr) # create vector to hold neighboring grid numbers
+      j <- 1
+      
+      for (i in 1:8) {  # store the adjacent cells in a vector w/o NAs
+        if (is.na(adj[i,c]) == F) {
+          nbs[j] <- adj[i,c]
+          j <- j + 1
+        }
+      }
+      
+      for (i in 1:length(nbs)) { # spread the excess water to neighboring cells
+        
+        stage.day[d,nbs[i]] <- stage.day[d,nbs[i]] + 
+          min(ds.max, (abs(d.stage[c]) - ds.max)/length(nbs))*sgn
+        
+      }
+      
+      pile <- abs(d.stage[c]) - ds.max # the amount of excess from cell in question, used in logical below
+      
+      if (ds.max < pile/length(nbs)) { # are the neighbors of the current cell enough to spread out excess?
+        
+        extra <- pile - ds.max*length(nbs) # the amount of excess remaining after neighbors reach ds.max
+        front <- matrix(nr = 1, nc = 8*length(nbs)) # initialize vector for neighbors of neighbors
+        
+        for (i in 1:length(nbs)) { # populate neighbor neighbor vector, including NAs
+          front[(8*(i-1)+1):(8*i)] <- adj[,nbs[i]]
+        }
+        
+        nbr <- abs(length(front) - sum(as.integer(is.na(front)))) # find out how many non-NA neighbors there are
+        k <- 1
+        nbs <- mat.or.vec(1,nbr) # initialize vector of unique neighboring grids
+        
+        for (i in 1:length(front)) {  # store the adjacent cells in a vector w/o NAs
+          if (is.na(front[i]) == F) {
+            nbs[k] <- front[i]
+            k <- k + 1
+          }
+        }
+        
+        nbs <- unique(as.vector(nbs)) # remove duplicate entries
+        
+        if (c %in% nbs == T) { # remove the original cell if included as a neighbor
+          nbs <- nbs[-match(c,nbs)] 
+        }
+        
+        
+        for (i in 1:length(nbs)) { # allocate extra flow to neighbor neighbors up to ds.max
+          
+          stage.day[d,nbs[i]] <- stage.day[d,nbs[i]] + 
+            min(ds.max, extra/length(nbs))*sgn
+          
+        }
+        
+        pile <- extra
+        
+      } # if the first round of adjacent cells isn't enough to spread it out
+      
+    } else { # if ds.max is exceeded in the cell nearest a flow structure
+      stage.day[d,c] <- stage.day[d,c] + d.stage[c] #update stage for current cell in current day
+      }
+    
+    if (stage.day[d,c] - elevs[c] > d.det) { # if water depth is above detention (Min et al.)
+      
+      ## Find water surface elevation difference between adjacent cells ##
+      drop <- matrix(nrow = 8, ncol = 1)
+      for (m in 1:8) {
+        drop[m] <- stage.day[d,c] - max(stage.day[d,adj[m,c]], elevs[adj[m,c]]) #find drop to stage or elev, whichever is higher
+      }
+      drop[is.na(drop)] <- -9999       #re-assigning NAs to work with logical statements
+
+      ## Find relative slope between adjacent cells ##
+      if (max(drop) > 0.005) {        #If there is positive slope from current cell, distribute water from cell
+        slope <- matrix(nrow = 8, ncol = 1)
+        for (n in c(1,3,5,7)) {        #for adjacent "corners", the distance is greater
+          slope[n] <- drop[n]/sqrt(2)
+        }
+        for (nn in c(2,4,6,8)) {       #"cardinal" neighbors have weight of 1
+          slope[nn] <- drop[nn]
+        }
+        for (s in 1:length(slope)) {   #re-re-assign NAs to find proportion of slope (and flow) to allot to each downhill neighbor
+          if (slope[s] < 0) {
+            slope[s] <- 0  #maybe change this...have to see how I do "pre-calculation"...
+          }
+        }
+        prop <- matrix(nrow = 8, ncol = 1)
+        for (p in 1:length(slope)) {   #find the portion of "total slope" for each downhill cell
+          prop[p] <- slope[p]/sum(slope)
+        }
+        for (mm in 1:8) {              #to work with Qtot logical statement
+          if (drop[mm] < 0.005) {
+            drop[mm] <- 10
+          }
+        }
+        
+        #My idea is to determine total outflow based on the largest head difference, then allocate
+        #that flow proportionally based on the head gradients with the downhill neighbors
+        Q.coeff <- cbind(prop,adj[,c])     #link proportion of flow to corresponding neighbors
+        Q.tot <- min(area*min(drop)/2, (stage.day[d,c]^(1.67 - b)*max(slope)^(0.5))*grids*86400/a) #d-dependent Mannings, adjusted to keep cell from discharging too much
+        
+         stage.day[d,c] <- stage.day[d,c] - Q.tot/area #do I need to adulterate this d.stage too? For sure!
+         
+        for (q in 1:8) {
+          stage.day[d, Q.coeff[q,2]] <- stage.day[d, Q.coeff[q,2]] + Q.tot*Q.coeff[q,1]/area
+        }
+        
+      } #if there is at least one positive drop
+      
+    }   #if there is standing water in current cell
+  
+  }   #for every cell
+  stage.day[d+1,] <- stage.day[d,]
+}     #for every day
+
+
+#plot(stage[1:100,6])#, ylim = range(4.5,5.5))
+#lines(stage.day[1:100,2974])
+plot(stage[1:365,2], ylim = range(4.6,5.4), xlab = "Day", ylab = "Stage [m]", 
+          main = paste("Measured (o) and Modelled (-) Stage at 1-7 at ", scalar*400, "m Grid", sep = ""))
+lines(stage.day[1:365,374])
+# need to change the col.. 91734 for 50m, 22987 for 100m, 5774 for 200m, 1457 for 400m, 374 for 800m, 97 for 1600m, 22 for 3200m
+#plot(stage[1:365,5], ylim = range(4.6,5.4), xlab = "Day", ylab = "Stage [m]", main = "Measured (o) and Modelled (-) Stage at 1-9")
+#lines(stage.day[1:365,2467])
+#plot(stage.day[1:30,3502])
+#plot(stage.day[1:30,492])
+
+
+#write.table(cbind(stage[1:365,2],stage.day[1:365,374]), file = paste("stage_test_1yr_800m-overflowredo.csv", sep = ""), 
+#            sep = ",", col.names = c("1-7M", "Modeled"), row.names = F)
+#write.table(cbind(stage[1:100,3],stage.day[1:100,1874]), file = paste("1-8T_100.csv", sep = ""))
+#write.table(cbind(stage[1:100,5],stage.day[1:100,2467]), file = paste("1-9_100.csv", sep = ""))
+
+tock <- Sys.time()
+runtime <- tock - tick
+print(runtime)
+print(Sys.time())
