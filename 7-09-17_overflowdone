@@ -196,7 +196,7 @@ for (d in 1:4017) {   ########changed this temporarily to avoid a 'subscript out
         #My idea is to determine total outflow based on the largest head difference, then allocate
         #that flow proportionally based on the head gradients with the downhill neighbors
         Q.coeff <- cbind(prop,adj[,c])     #link proportion of flow to corresponding neighbors
-        Q.tot <- min(area*min(drop)/2, (stage.day[d,c]^(1.67 - b)*max(slope)^(0.5))*grids*86400/a) #d-dependent Mannings, adjusted to keep cell from discharging too much
+        Q.tot <- min(area*min(drop)/2, ((stage.day[d,c] - elevs[c])^(1.67 - b)*max(slope)^(0.5))*grids*86400/a) #d-dependent Mannings, adjusted to keep cell from discharging too much
         
          stage.day[d,c] <- stage.day[d,c] - Q.tot/area #do I need to adulterate this d.stage too? For sure!
          
