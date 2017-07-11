@@ -173,10 +173,10 @@ for (d in 1:4017) {   ########changed this temporarily to avoid a 'subscript out
       if (max(drop) > 0.005) {        #If there is positive slope from current cell, distribute water from cell
         slope <- matrix(nrow = 8, ncol = 1)
         for (n in c(1,3,5,7)) {        #for adjacent "corners", the distance is greater
-          slope[n] <- drop[n]/grids/sqrt(2)
+          slope[n] <- drop[n]/sqrt(2)
         }
         for (nn in c(2,4,6,8)) {       #"cardinal" neighbors have weight of 1
-          slope[nn] <- drop[nn]/grids
+          slope[nn] <- drop[nn]
         }
         for (s in 1:length(slope)) {   #re-re-assign NAs to find proportion of slope (and flow) to allot to each downhill neighbor
           if (slope[s] < 0) {
